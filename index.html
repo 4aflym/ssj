@@ -128,6 +128,16 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:5px 4px;b
     <div class="lbl" style="margin-top:0">基准货币（统计都换算成它）</div>
     <select id="baseSel"></select>
   </div>
+  <div class="card" id="syncCard">
+    <div class="lbl" style="margin-top:0">多设备同步（存到你自己的 GitHub 私有仓库）</div>
+    <div id="ghState" class="muted"></div>
+    <div id="ghForm">
+      <input id="ghRepo" placeholder="仓库，如 4aflym/ssj-data" style="margin-top:6px" autocomplete="off">
+      <input id="ghToken" placeholder="访问令牌（github_pat_ 开头）" style="margin-top:6px" autocomplete="off" type="password">
+      <button class="btn pri" id="ghSave" style="margin-top:8px;width:100%">连接并同步</button>
+    </div>
+    <div class="row" id="ghBtns" style="margin-top:8px"><button class="btn" id="ghNow">立即同步</button><button class="btn danger" id="ghOff">断开这台设备</button></div>
+  </div>
   <div class="card">
     <div class="lbl" style="margin-top:0">导入账单</div>
     <button class="btn pri" id="impAuto" style="width:100%">选择账单文件（自动识别）</button>
@@ -226,7 +236,8 @@ function netBase(e){return toBase(e)-(e.type==='exp'?ptVal(e):0)}
 function round(n,cur){const f=Math.pow(10,dec(cur));return Math.round(n*f)/f}
 
 /* ===================== 本地缓存 ===================== */
-function saveLocal(){try{localStorage.setItem(LS_KEY,JSON.stringify({cfg,entries:[...entries.values()]}));localStorage.setItem(LS_OUT,JSON.stringify(outbox))}catch(e){}}
+let noCloud=!(window.claude&&window.claude.use),applying=false;
+function saveLocal(){if(!applying&&window.ghMarkDirty)ghMarkDirty();try{localStorage.setItem(LS_KEY,JSON.stringify({cfg,entries:[...entries.values()]}));localStorage.setItem(LS_OUT,JSON.stringify(outbox))}catch(e){}}
 function loadLocal(){try{const j=JSON.parse(localStorage.getItem(LS_KEY)||'null');if(j){cfg=Object.assign(clone(DEFAULT_CFG),j.cfg||{});(j.entries||[]).forEach(e=>entries.set(e.id,e))}outbox=JSON.parse(localStorage.getItem(LS_OUT)||'{}')||{}}catch(e){}}
 
 /* ===================== 云端同步 ===================== */
@@ -237,6 +248,7 @@ async function withRetry(fn){
   throw {code:'unavailable'};
 }
 async function flush(){
+  if(!db&&noCloud){if(Object.keys(outbox).length){outbox={};try{localStorage.setItem(LS_OUT,'{}')}catch(e){}}return}
   if(!db||flushing)return; flushing=true;
   try{
     const ids=Object.keys(outbox);
@@ -253,12 +265,12 @@ async function flush(){
     setSync(left?('待同步 '+left+' 条'):'已同步 ☁︎');
   }finally{flushing=false}
 }
-function queue(e){outbox[e.id]=e;saveLocal();flush()}
-function queueDel(id){outbox[id]={__del:true};saveLocal();flush()}
-function saveCfg(){saveLocal();if(!db)return;clearTimeout(cfgTimer);cfgTimer=setTimeout(()=>{withRetry(()=>db.doc('config/main').set(clone(cfg))).catch(()=>{})},800)}
+function queue(e){try{const T=JSON.parse(localStorage.getItem('ssj.tomb')||'{}');if(T[e.id]){e.updated=Date.now()}}catch(x){}outbox[e.id]=e;saveLocal();flush()}
+function queueDel(id){try{const T=JSON.parse(localStorage.getItem('ssj.tomb')||'{}');T[id]=Date.now();localStorage.setItem('ssj.tomb',JSON.stringify(T))}catch(e){}outbox[id]={__del:true};saveLocal();flush()}
+function saveCfg(){cfg._ts=Date.now();saveLocal();if(!db)return;clearTimeout(cfgTimer);cfgTimer=setTimeout(()=>{withRetry(()=>db.doc('config/main').set(clone(cfg))).catch(()=>{})},800)}
 
 async function initDb(){
-  if(!window.claude||!window.claude.use){setSync('只存在本机');return}
+  if(!window.claude||!window.claude.use){return}
   try{db=await window.claude.use('db')}catch(e){db=null}
   if(!db){setSync('只存在本机');return}
   setSync('连接中…');
@@ -561,7 +573,7 @@ function fillSettings(){
   renderScEdit();
   $('catsTa').value=cfg.cats.join('，');$('incTa').value=cfg.incCats.join('，');$('acctTa').value=cfg.accts.join('，');
   const n=entries.size,out=Object.keys(outbox).length;
-  $('storeInfo').textContent=`共 ${n} 条记录。`+(db?`存在你的 claude.ai 账号里（只有你能看），手机和电脑打开同一个链接看到的是同一份。${out?`还有 ${out} 条等网络恢复后上传。`:''}`:'只存在这台手机的浏览器里（不上传任何地方）。请从主屏幕图标打开，并定期导出 JSON 备份。');
+  $('storeInfo').textContent=`共 ${n} 条记录。`+(db?`存在你的 claude.ai 账号里（只有你能看），手机和电脑打开同一个链接看到的是同一份。${out?`还有 ${out} 条等网络恢复后上传。`:''}`:(ghOn()?'存在这台设备里，并同步到你的 GitHub 私有仓库 '+GH.repo+'。':'只存在这台设备的浏览器里。开启上面的同步，或定期导出 JSON 备份。'));
 }
 function splitList(s){return [...new Set(String(s).split(/[,，、\n]+/).map(x=>x.trim()).filter(Boolean))]}
 
@@ -920,6 +932,81 @@ $('date').value=ymd(new Date());
 renderAll();
 setTimeout(()=>{try{$('quick').focus()}catch(e){}},300);
 initDb();
+
+/* ===================== 多设备同步：GitHub 私有仓库里的 data.json ===================== */
+const GH={repo:'',token:'',sha:null,busy:false,dirty:false,timer:null,last:0,err:''};
+try{const g=JSON.parse(localStorage.getItem('ssj.gh')||'{}');GH.repo=g.repo||'';GH.token=g.token||'';GH.last=g.last||0}catch(e){}
+function ghSaveCreds(){try{localStorage.setItem('ssj.gh',JSON.stringify({repo:GH.repo,token:GH.token,last:GH.last}))}catch(e){}}
+function ghOn(){return !!(GH.repo&&GH.token)}
+window.ghMarkDirty=function(){if(!ghOn())return;GH.dirty=true;clearTimeout(GH.timer);GH.timer=setTimeout(()=>ghSync(),2500)};
+function b64enc(str){const b=new TextEncoder().encode(str);let s='';for(let i=0;i<b.length;i+=0x8000)s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000));return btoa(s)}
+function b64dec(b64){const bin=atob(b64.replace(/\s/g,''));const u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return new TextDecoder().decode(u)}
+async function ghApi(method,body,raw){
+  const r=await fetch(`https://api.github.com/repos/${GH.repo}/contents/suishouji-data.json`+(method==='GET'?'?t='+Date.now():''),{method,cache:'no-store',
+    headers:{'Authorization':'Bearer '+GH.token,'Accept':raw?'application/vnd.github.raw+json':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},body:body?JSON.stringify(body):undefined});
+  return r;
+}
+async function ghGet(){
+  const r=await ghApi('GET');
+  if(r.status===404)return {data:null,sha:null};
+  if(r.status===401)throw new Error('令牌不对或已过期');
+  if(r.status===403)throw new Error('令牌没有这个仓库的读写权限');
+  if(!r.ok)throw new Error('GitHub 返回 '+r.status);
+  const j=await r.json();let txt=j.content?b64dec(j.content):'';
+  if(!txt&&j.size>0){const r2=await ghApi('GET',null,true);txt=await r2.text()}
+  return {data:txt?JSON.parse(txt):null,sha:j.sha};
+}
+function tombs(){try{return JSON.parse(localStorage.getItem('ssj.tomb')||'{}')}catch(e){return {}}}
+function mergeData(remote){
+  const T=Object.assign({},(remote&&remote.deleted)||{});const LT=tombs();for(const k in LT)T[k]=Math.max(T[k]||0,LT[k]);
+  const all=new Map();
+  const add=e=>{if(!e||!e.id)return;const o=all.get(e.id);if(!o||(e.updated||e.created||0)>(o.updated||o.created||0))all.set(e.id,e)};
+  ((remote&&remote.entries)||[]).forEach(add);entries.forEach(add);
+  for(const [id,e] of all){if(T[id]&&T[id]>=(e.updated||e.created||0))all.delete(id)}
+  // 只保留 1 年内的删除记录
+  const cut=Date.now()-365*864e5;for(const k in T)if(T[k]<cut)delete T[k];
+  let c=cfg;if(remote&&remote.cfg&&(remote.cfg._ts||0)>(cfg._ts||0))c=Object.assign(clone(DEFAULT_CFG),remote.cfg);
+  return {v:1,app:'suishouji',updatedAt:Date.now(),cfg:c,deleted:T,entries:[...all.values()]};
+}
+function sameData(a,b){if(!a||!b)return false;if((a.entries||[]).length!==(b.entries||[]).length)return false;
+  const m=new Map(a.entries.map(e=>[e.id,e.updated||e.created||0]));for(const e of b.entries)if(m.get(e.id)!==(e.updated||e.created||0))return false;
+  return (a.cfg&&a.cfg._ts)===(b.cfg&&b.cfg._ts)&&Object.keys(a.deleted||{}).length===Object.keys(b.deleted||{}).length}
+async function ghSync(manual){
+  if(!ghOn()||GH.busy)return;if(!navigator.onLine){ghShow('没网，联网后自动同步');return}
+  GH.busy=true;GH.dirty=false;ghShow('同步中…');
+  try{
+    for(let attempt=0;attempt<3;attempt++){
+      const {data:remote,sha}=await ghGet();
+      const merged=mergeData(remote);
+      // 先更新本机
+      applying=true;cfg=merged.cfg;entries=new Map(merged.entries.map(e=>[e.id,e]));try{localStorage.setItem('ssj.tomb',JSON.stringify(merged.deleted))}catch(e){}saveLocal();applying=false;renderAll();
+      if(sameData(remote,merged)){GH.sha=sha;break}
+      const r=await ghApi('PUT',{message:'sync '+new Date().toISOString(),content:b64enc(JSON.stringify(merged)),sha:sha||undefined});
+      if(r.ok){GH.sha=(await r.json()).content.sha;break}
+      if(r.status===409||r.status===422){continue} // 别的设备刚写过：重新拉取再合并
+      if(r.status===403||r.status===404)throw new Error('令牌没有写入这个仓库的权限');
+      throw new Error('GitHub 返回 '+r.status);
+    }
+    GH.last=Date.now();GH.err='';ghSaveCreds();ghShow();if(manual)toast('已同步');
+  }catch(e){applying=false;GH.err=e.message||String(e);ghShow();if(manual)toast('同步失败：'+GH.err)}
+  finally{GH.busy=false;if(GH.dirty)ghMarkDirty()}
+}
+function ghShow(msg){
+  const t=GH.last?new Date(GH.last).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):'';
+  const st=!ghOn()?'未开启同步：数据只在这台设备里。':msg?msg:GH.err?('⚠ '+GH.err):('已同步到 '+GH.repo+(t?'（'+t+'）':''));
+  if($('ghState')){$('ghState').textContent=st;$('ghForm').style.display=ghOn()?'none':'';$('ghBtns').style.display=ghOn()?'':'none'}
+  setSync(!ghOn()?'只存在本机':msg?msg:GH.err?'同步失败 ⚠':'已同步 ☁︎'+(t?' '+t:''));
+}
+$('ghSave').onclick=()=>{const repo=$('ghRepo').value.trim().replace(/^https?:\/\/github\.com\//,'').replace(/\/$/,''),token=$('ghToken').value.trim();
+  if(!/^[\w.-]+\/[\w.-]+$/.test(repo)){toast('仓库要写成 用户名/仓库名');return}if(token.length<20){toast('令牌好像不完整');return}
+  GH.repo=repo;GH.token=token;GH.err='';ghSaveCreds();$('ghToken').value='';ghSync(true)};
+$('ghNow').onclick=()=>ghSync(true);
+$('ghOff').onclick=()=>{GH.token='';GH.repo='';GH.last=0;ghSaveCreds();ghShow();toast('这台设备已断开同步（数据还在本机）')};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&ghOn())ghSync()});
+window.addEventListener('online',()=>{if(ghOn())ghSync()});
+setInterval(()=>{if(ghOn()&&document.visibilityState==='visible')ghSync()},120000);
+ghShow();if(ghOn())ghSync();
+
 /* ===== 独立版：离线缓存 + 实时汇率 + 申请持久存储 ===== */
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){navigator.serviceWorker.register('sw.js').catch(()=>{})}
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
