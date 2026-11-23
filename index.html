@@ -402,8 +402,18 @@ function parseQuick(text){
   if(!r.cur)for(const k in sy){const i=t.toLowerCase().indexOf(k.toLowerCase());if(i>=0){r.cur=sy[k];t=t.slice(0,i)+' '+t.slice(i+k.length);break}}
   t=t.replace(/[¥￥]/g,' ');
   const cm=t.match(/\b([A-Za-z]{3})\b/);if(!r.cur&&cm&&cfg.rates[cm[1].toUpperCase()]){r.cur=cm[1].toUpperCase();t=t.replace(cm[0],' ')}
+  // 充值：「suica充值 5000 招行」「充值星巴克卡 3000」→ 转账
+  const AL={'三井':'三井住友信用卡','三井住友':'三井住友信用卡','招行':'招行信用卡','西瓜卡':'suica','星巴克':'星巴克卡','生协':'生协卡','pp':'paypay'};
+  if(/充值|チャージ|入金/.test(t)){
+    const names=[...cfg.accts].concat(Object.keys(AL)).sort((a,b)=>b.length-a.length);
+    const resolve=w=>cfg.accts.includes(w)?w:AL[w]&&cfg.accts.includes(AL[w])?AL[w]:null;
+    let to=null,from=null,tt=t;
+    for(const n of names){const re=new RegExp('('+n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')\\s*(充值|チャージ|入金)|(充值|チャージ|入金)\\s*('+n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','i');const mm=tt.match(re);if(mm&&resolve(n)){to=resolve(n);tt=tt.replace(mm[0],' ');break}}
+    if(to){for(const n of names){if(tt.toLowerCase().includes(n.toLowerCase())&&resolve(n)&&resolve(n)!==to){from=resolve(n);tt=tt.replace(new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i'),' ');break}}
+      r.type='tr';r.to=to;r.acct=from||(cfg.accts.find(a=>/三井住友/.test(a))||cfg.accts[0]);r.cat='转账';r.note=(to+'充值');r.cur=r.cur||'JPY';return r}
+  }
   const low=t.toLowerCase();
-  const acctAlias={'三井':'三井住友信用卡','三井住友':'三井住友信用卡','信用卡':'三井住友信用卡','zfb':'支付宝','花呗':'支付宝','wx':'微信','pp':'paypay','西瓜卡':'suica','sbux':'星巴克卡'};
+  const acctAlias={'招行':'招行信用卡','三井':'三井住友信用卡','三井住友':'三井住友信用卡','信用卡':'三井住友信用卡','zfb':'支付宝','花呗':'支付宝','wx':'微信','pp':'paypay','西瓜卡':'suica','sbux':'星巴克卡'};
   const accs=[...cfg.accts].sort((a,b)=>b.length-a.length);
   for(const a of accs)if(low.includes(a.toLowerCase())){r.acct=a;t=t.replace(new RegExp(a.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i'),' ');break}
   if(!r.acct)for(const k in acctAlias)if(low.includes(k)&&cfg.accts.includes(acctAlias[k])){r.acct=acctAlias[k];t=t.replace(new RegExp(k,'i'),' ');break}
