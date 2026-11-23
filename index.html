@@ -91,10 +91,10 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:5px 4px;b
     <div id="toWrap" style="display:none"><div class="lbl">转入账户</div><div class="chips" id="toAccts"></div></div>
     <div class="lbl">备注 / 日期</div>
     <div class="row"><input id="note" placeholder="备注（可空）" autocomplete="off"><input id="date" type="date" style="flex:.8"></div>
-    <details id="ptBox" style="margin-top:8px"><summary class="muted">积分 / 红包优惠</summary>
-      <div class="row" style="margin-top:6px"><input id="disc" inputmode="decimal" placeholder="红包/优惠/立减 金额"><span class="muted" id="discCur" style="flex:.6;align-self:center">（填了实付就按实付币种，否则按原价币种）</span></div>
+    <details id="ptBox" style="margin-top:8px"><summary class="muted">积分（V Point / 生协ポイント 等）</summary>
+      <div class="row" style="margin-top:6px;display:none"><input id="disc" inputmode="decimal" placeholder="红包/优惠/立减 金额"><span class="muted" id="discCur" style="flex:.6;align-self:center">（填了实付就按实付币种，否则按原价币种）</span></div>
       <div class="row" style="margin-top:6px"><input id="ptUsed" inputmode="decimal" placeholder="用了几点抵扣"><input id="ptGot" inputmode="decimal" placeholder="得了几点"></div>
-      <p class="muted" style="margin:4px 2px 0">积分按 1 点 = 1 日元算。实际支出 = 原价 − 红包优惠 − 用掉的积分。</p></details>
+      <p class="muted" style="margin:4px 2px 0">积分按 1 点 = 1 日元算。实际支出 = 金额 − 用掉的积分。</p></details>
     <button class="big" id="saveBtn">保存</button>
     <button class="btn" id="saveSc" style="width:100%;margin-top:8px">把这一笔的设置存为快捷按钮</button>
   </div>
@@ -117,7 +117,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:5px 4px;b
   <div class="card"><div class="lbl" style="margin-top:0">支出分类</div><div id="byCat"></div></div>
   <div class="card"><div class="lbl" style="margin-top:0">常去（按备注，前 10）</div><div id="byNote"></div></div>
   <div class="card"><div class="lbl" style="margin-top:0">按账户（支出）</div><div id="byAcct"></div></div>
-  <div class="card" id="ptCard"><div class="lbl" style="margin-top:0">积分 / 红包优惠</div><div id="ptSum" class="muted"></div></div>
+  <div class="card" id="ptCard"><div class="lbl" style="margin-top:0">积分</div><div id="ptSum" class="muted"></div></div>
   <div class="card"><div class="lbl" style="margin-top:0">按原币种（支出）</div><div id="byCur"></div></div>
   <div class="card"><div class="lbl" style="margin-top:0" id="yearLbl">全年每月支出</div><div id="byMonth"></div></div>
 </section>
@@ -376,7 +376,7 @@ function editEntry(id){
   if(e.type!=='tr')ui.cat=e.cat;
   const cats=e.type==='inc'?cfg.incCats:cfg.cats; if(e.type!=='tr'&&!cats.includes(e.cat)){ if(e.type==='inc')cfg.incCats.push(e.cat); else cfg.cats.push(e.cat) }
   if(!cfg.accts.includes(e.acct))cfg.accts.push(e.acct);
-  $('amt').value=e.amt;$('paid').value=e.paid||'';fillPaidCur(e.paidCur);$('note').value=e.note||'';$('date').value=e.date;$('ptUsed').value=e.ptUsed||'';$('ptGot').value=e.ptGot||'';$('disc').value=e.disc||'';$('ptBox').open=!!(e.ptUsed||e.ptGot||e.disc);
+  $('amt').value=e.amt;$('paid').value=e.paid||'';fillPaidCur(e.paidCur);$('note').value=e.note||'';$('date').value=e.date;$('ptUsed').value=e.ptUsed||'';$('ptGot').value=e.ptGot||'';$('disc').value=e.disc||'';$('ptBox').open=!!(e.ptUsed||e.ptGot);
   showView('add');renderAdd();
   const box=$('v-add').querySelector('.card');
   let extra=$('editExtra'); if(!extra){extra=document.createElement('div');extra.id='editExtra';box.appendChild(extra)}
@@ -546,7 +546,7 @@ function renderStat(){
   const exp=list.filter(e=>e.type==='exp');const tot=sums(exp).exp;
   const c={},a={},u={};const nt={};let pu=0,pg=0;exp.forEach(e=>{const b=netBase(e);c[e.cat]=(c[e.cat]||0)+b;a[e.acct]=(a[e.acct]||0)+b;u[e.cur]=(u[e.cur]||0)+b;const k=e.note||e.merchant||'(无备注)';nt[k]=(nt[k]||0)+b});
   let dsc=0;list.forEach(e=>{pu+=+e.ptUsed||0;pg+=+e.ptGot||0;if(e.disc){const c=e.paid?e.paidCur:e.cur;const rr=rate(c,cfg.base);if(rr!=null)dsc+=e.disc*rr}});
-  $('ptSum').textContent=`本月用积分抵扣 ${pu} 点，获得 ${pg} 点；红包优惠省了约 ${fmt(dsc)}`;
+  $('ptSum').textContent=`本月用积分抵扣 ${pu} 点，获得 ${pg} 点`+(dsc>0?`；红包优惠省了约 ${fmt(dsc)}`:'');
   const ntTop=Object.fromEntries(Object.entries(nt).sort((x,y)=>y[1]-x[1]).slice(0,10));bars($('byNote'),ntTop,tot);
   bars($('byCat'),c,tot);bars($('byAcct'),a,tot);bars($('byCur'),u,tot);
   const y=ui.month.slice(0,4);$('yearLbl').textContent=y+' 年每月支出';
