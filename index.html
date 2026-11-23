@@ -130,8 +130,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:5px 4px;b
   </div>
   <div class="card">
     <div class="lbl" style="margin-top:0">导入账单</div>
-    <div class="row"><button class="btn" id="impZfb">支付宝账单</button><button class="btn" id="impWx">微信账单</button></div>
-    <p class="muted">支付宝：xlsx 或 csv。微信：xlsx 或 csv（解压后的文件）。按订单号去重，重复导入不会多记。</p>
+    <button class="btn pri" id="impAuto" style="width:100%">选择账单文件（自动识别）</button>
+    <p class="muted">支持：支付宝、微信（xlsx/csv），生协 App 的 csv，PayPay 的 csv，三井住友 Vpass 的明细 csv，Suica 的 JR 利用履历 PDF。同一个文件导两次不会重复；信用卡充值和钱包入账会自动配成一条转账。招行信用卡暂时没有能导出的文件，先手动记或用一句话记。</p>
     <input type="file" id="fileIn" accept=".xlsx,.xls,.csv,.txt" style="display:none">
   </div>
   <div class="card">
@@ -325,7 +325,7 @@ function fmtRate(r){if(r==null)return '?';return r>=100?r.toFixed(1):r>=1?r.toFi
 function resetForm(){ $('amt').value='';$('paid').value='';$('disc').value='';$('note').value='';$('ptUsed').value='';$('ptGot').value='';$('ptBox').open=false;$('date').value=ymd(new Date());ui.editId=null;renderAdd() }
 function saveEntry(){
   const a=parseAmt($('amt').value);
-  if(!isFinite(a)||a<=0){toast('先输入金额');$('amt').focus();return}
+  if(!isFinite(a)||a===0){toast('先输入金额');$('amt').focus();return}
   if(ui.type==='tr'&&!ui.to){toast('选一个转入账户');return}
   const old=ui.editId?entries.get(ui.editId):null;
   const pd=parseAmt($('paid').value),pc=$('paidCur').value;const hasPaid=pd>0&&pc&&pc!==ui.cur;
@@ -489,11 +489,10 @@ function monthEntries(m){return [...entries.values()].filter(e=>e.date&&e.date.s
 function sums(list){let exp=0,inc=0;list.forEach(e=>{if(e.type==='exp')exp+=netBase(e);else if(e.type==='inc')inc+=toBase(e)});return{exp,inc}}
 function sum3(el,list){const s=sums(list);el.innerHTML=`<div><small>支出</small><span>${fmt(s.exp)}</span></div><div><small>收入</small><span class="pos">${fmt(s.inc)}</span></div><div><small>结余</small><span>${fmt(s.inc-s.exp)}</span></div>`}
 function entHtml(e){
-  const sign=e.type==='exp'?'-':e.type==='inc'?'+':'';
   const cls=e.type==='exp'?'neg':e.type==='inc'?'pos':'trn';
-  const b=netBase(e);
+  const b0=netBase(e);const sign=e.type==='exp'?(b0<0?'+':'-'):e.type==='inc'?'+':'';const b=Math.abs(b0);
   const sub=[e.type==='tr'?(e.acct+' → '+e.to):e.acct,e.note||e.merchant||'',e.pay||''].filter(Boolean).join(' · ');
-  const flag=e.cat==='待分类'?'<span class="flag">待分类</span>':'';
+  const flag=(e.cat==='待分类'?'<span class="flag">待分类</span>':'')+(e.acct==='待确认来源'?'<span class="flag">来源待确认</span>':'');
   const fl2=(e.dup?'<span class="flag">可能重复</span>':'')+(e.ptUsed?`<span class="flag" style="color:var(--grn);border-color:var(--grn)">积分${e.ptUsed}</span>`:'')+(e.disc?`<span class="flag" style="color:var(--grn);border-color:var(--grn)">红包优惠${e.disc}</span>`:'');
   return `<div class="ent" data-edit="${esc(e.id)}"><div class="l"><div class="t">${esc(e.cat)}${flag}${fl2}</div><div class="s">${esc(sub)}</div></div><div class="r"><div class="a ${cls}">${sign}${fmt(b)}</div>${(e.cur!==cfg.base||e.paid)?`<div class="o">${fmt(e.amt,e.cur)}${e.paid?' · 实付 '+fmt(e.paid,e.paidCur):''}</div>`:''}</div></div>`;
 }
@@ -501,10 +500,10 @@ function renderList(){
   document.querySelectorAll('.mlabel').forEach(x=>x.textContent=ui.month.replace('-','年')+'月');
   let list=monthEntries(ui.month);
   sum3($('listSum'),list);
-  const nTodo=list.filter(e=>e.cat==='待分类').length;
-  const fs=[['all','全部'],['exp','支出'],['inc','收入'],['tr','转账'],['todo','待分类 '+nTodo]];
+  const nTodo=list.filter(e=>e.cat==='待分类'||e.acct==='待确认来源').length;
+  const fs=[['all','全部'],['exp','支出'],['inc','收入'],['tr','转账'],['todo','待处理 '+nTodo]];
   $('listFilter').innerHTML=fs.map(([k,v])=>`<button class="chip${ui.filter===k?' on':''}" data-filter="${k}">${v}</button>`).join('');
-  if(ui.filter==='todo')list=list.filter(e=>e.cat==='待分类');else if(ui.filter!=='all')list=list.filter(e=>e.type===ui.filter);
+  if(ui.filter==='todo')list=list.filter(e=>e.cat==='待分类'||e.acct==='待确认来源');else if(ui.filter!=='all')list=list.filter(e=>e.type===ui.filter);
   const q=$('search').value.trim().toLowerCase();
   if(q)list=list.filter(e=>[e.cat,e.note,e.merchant,e.goods,e.acct,e.cur].join(' ').toLowerCase().includes(q));
   list.sort((a,b)=>(b.date+(b.time||'')+b.created).localeCompare(a.date+(a.time||'')+a.created));
@@ -567,7 +566,8 @@ async function readRows(file){
   let wb;
   if(isText){
     let txt=new TextDecoder('utf-8').decode(buf);
-    if(txt.includes(String.fromCharCode(0xFFFD)))txt=new TextDecoder('gb18030').decode(buf);
+    if(txt.includes(String.fromCharCode(0xFFFD))){const sj=new TextDecoder('shift_jis').decode(buf),gb=new TextDecoder('gb18030').decode(buf);
+      const jpScore=(sj.match(/[ぁ-んァ-ン]/g)||[]).length-(sj.match(/\uFFFD/g)||[]).length*5,cnScore=(gb.match(/交易|金额|支出|收入|账单/g)||[]).length*20-(gb.match(/\uFFFD/g)||[]).length*5;txt=jpScore>cnScore?sj:gb}
     txt=txt.replace(/^﻿/,'');
     wb=XLSX.read(txt,{type:'string',raw:true});
   } else wb=XLSX.read(buf,{type:'array',cellDates:true});
@@ -647,13 +647,13 @@ function buildImport(rows,kind){
   return out;
 }
 function showImport(res,kind){
-  const name=kind==='zfb'?'支付宝':'微信';
+  const name=KIND_NAME[kind]||kind;
   const sk=Object.entries(res.skipped).map(([k,v])=>`${k} ${v} 条`).join('，');
   const nNew=res.items.filter(x=>!x.dup).length,nDup=res.items.length-nNew;
   const todo=res.items.filter(x=>x.e.cat==='待分类').length;
   openSheet(`<h3>导入${name}账单</h3>
    <p class="muted">新记录 <b>${nNew}</b> 条${nDup?`，<span class="warn">和手动记过的可能重复 ${nDup} 条（默认不勾）</span>`:''}${res.already?`，之前已导入过 ${res.already} 条（自动跳过）`:''}${sk?`，跳过：${sk}`:''}。${todo?`其中 ${todo} 条认不出分类，会标“待分类”。`:''}</p>
-   <div class="imp">${res.items.map((x,i)=>`<label><input type="checkbox" data-imp="${i}" ${x.dup?'':'checked'}><span>${x.e.date} ${x.e.type==='inc'?'<span class="pos">收入</span> ':''}<b>${fmt(x.e.amt,'CNY')}</b> ${esc(x.e.cat)} · ${esc(x.e.note)}${x.dup?`<br><span class="warn">已有手动记录：${x.dup.date} ${esc(x.dup.cat)} ${fmt(x.dup.amt,'CNY')} ${esc(x.dup.note||'')}</span>`:''}</span></label>`).join('')||'<p class="muted" style="padding:10px">没有新记录</p>'}</div>
+   <div class="imp">${res.items.map((x,i)=>`<label><input type="checkbox" data-imp="${i}" ${x.dup?'':'checked'}><span>${x.e.date} ${x.e.type==='inc'?'<span class="pos">收入</span> ':x.e.type==='tr'?'<span class="trn">转账</span> ':''}<b>${fmt(x.e.amt,x.e.cur)}</b> ${x.e.type==='tr'?esc(x.e.acct+' → '+x.e.to):esc(x.e.cat)} · ${esc(x.e.note)}${x.e.ptUsed?' · 积分'+x.e.ptUsed:''}${x.why?`<br><span class="muted">${esc(x.why)}</span>`:''}${x.dup?`<br><span class="warn">已有记录：${x.dup.date} ${esc(x.dup.cat)} ${fmt(x.dup.amt,x.dup.cur)} ${esc(x.dup.note||'')}</span>`:''}</span></label>`).join('')||'<p class="muted" style="padding:10px">没有新记录</p>'}</div>
    <div class="row" style="margin-top:10px"><button class="btn" id="impCancel">取消</button><button class="btn pri" id="impGo" ${res.items.length?'':'disabled'}>导入勾选的</button></div>`);
   $('impCancel').onclick=closeSheet;
   $('impGo').onclick=()=>{
@@ -661,6 +661,141 @@ function showImport(res,kind){
     pick.forEach(e=>{entries.set(e.id,e);outbox[e.id]=e});saveLocal();saveCfg();flush();closeSheet();renderAll();
     toast(`已导入 ${pick.length} 条${name}记录`);
   };
+}
+
+
+/* ===================== 导入：生协 / PayPay / 三井住友 / Suica ===================== */
+function jpN(v){if(typeof v==='number')return v;const s=cellStr(v).normalize('NFKC').replace(/[¥￥円,\s]/g,'');return /^[+-]?\d+(\.\d+)?$/.test(s)?Number(s):0}
+function nk(s){return cellStr(s).normalize('NFKC').replace(/\s+/g,' ').trim()}
+function detectKind(rows,fname){
+  const top=rows.slice(0,40).map(r=>r.map(cellStr).join('|')).join('\n');
+  if(/FeeManager_Suica_Statement_V1|^Date\|Kind\|Merchant\|AmountJPY/m.test(top))return 'suicacsv';
+  if(top.includes('ご利用日')&&top.includes('ステータス')&&top.includes('ポイント'))return 'coop';
+  if(top.includes('Amount Outgoing')&&top.includes('Transaction ID'))return 'paypay';
+  if(top.includes('交易订单号')||top.includes('支付宝'))return 'zfb';
+  if(top.includes('微信支付')||(top.includes('交易单号')&&top.includes('当前状态')))return 'wx';
+  const datedRows=rows.filter(r=>/^20\d{2}\/\d{1,2}\/\d{1,2}$/.test(cellStr(r[0]))).length;
+  if(datedRows>0&&(/VISA|三井住友|カード|Ｖｉｓａ/i.test(cellStr((rows[0]||[]).join(' ')).normalize('NFKC'))||datedRows>=rows.length/2))return 'smbc';
+  return null;
+}
+const KIND_NAME={zfb:'支付宝',wx:'微信',coop:'生协',paypay:'PayPay',smbc:'三井住友信用卡',suica:'Suica',suicacsv:'Suica'};
+function noteOf(m){
+  const s=nk(m);const P=[[/APPLE COM BILL|APPLE\.COM\/BILL/i,'ChatGPT'],[/マクドナルド|MCDONALD/i,'麦当劳'],[/関西スーパー/i,'关超'],[/BEN GONG|本宫的茶|本宮的茶/i,'本宫的茶'],[/大学生協電子マネー入金|生協.*チャージ|アプリチャージ/i,'生协卡充值'],[/大阪大学生協|生協.*食堂|ファミール/i,'生协'],[/SPOTIFY/i,'Spotify'],[/楽天モバイル|ラクテンモバイル|RAKUTEN MOBILE/i,'乐天'],[/オクトパスエナジー|OCTOPUS ENERGY/i,'电费(Octopus)'],[/阪急バス/i,'阪急'],[/セブン.?イレブン|7.ELEVEN/i,'7-11'],[/ファミリーマート|FAMILY.?MART/i,'全家'],[/ローソン|LAWSON/i,'罗森'],[/スターバックス|STARBUCKS/i,'星巴克'],[/ユニクロ|UNIQLO/i,'UNIQLO'],[/AMAZON|アマゾン/i,'Amazon'],[/ダイソー|DAISO/i,'daiso'],[/B.?FIT/i,'B-fit'],[/SUBWAY|サブウェイ/i,'Subway']];
+  for(const [re,v] of P)if(re.test(s))return v;return s.length>30?s.slice(0,30)+'…':s;
+}
+function catOf(m){
+  const s=nk(m).toUpperCase();
+  if(cfg.rules[nk(m)])return cfg.rules[nk(m)];
+  if(/SPOTIFY|CHATGPT|APPLE[ .]*COM[ \/]*BILL|NETFLIX|YOUTUBE/.test(s))return '订阅';
+  if(/楽天モバイル|ラクテンモバイル|RAKUTEN MOBILE|DOCOMO|SOFTBANK|AHAMO|POVO/.test(s))return '通信';
+  if(/B.?FIT/.test(s))return '运动';
+  if(/バス|SUICA|鉄道|電鉄|地下鉄|乗車|JR|タクシー/.test(s))return '交通';
+  if(/電気|ガス|水道|家賃|オクトパス|OCTOPUS/.test(s))return '住房';
+  if(/食堂|ファミール|生協|マクドナルド|MCDONALD|関西スーパー|BEN GONG|本宮|SUBWAY|サブウェイ|ローソン|LAWSON|セブン|7.ELEVEN|ファミリーマート|FAMILY.?MART|スターバックス|STARBUCKS|ドミノ|スーパー|ベーカリー|パン|カフェ|CAFE|COFFEE|ラーメン|すき家|吉野家|松屋/.test(s))return '餐饮';
+  if(/病院|クリニック|処方|調剤/.test(s))return '医疗';
+  if(/ココカラファイン|スギ薬局|ダイソー|DAISO|ユニクロ|UNIQLO|ABC.?MART|AMAZON|アマゾン|ドラッグ|ニトリ|無印/.test(s))return '购物';
+  return '待分类';
+}
+function mkE(o){const rt=rate(o.cur||'JPY',cfg.base);const amt=o.amt;
+  const e=Object.assign({type:'exp',cur:'JPY',cat:'待分类',to:'',note:'',time:'',src:'bank',created:Date.now(),updated:Date.now()},o);
+  e.base=rt==null?null:round(amt*rt,cfg.base);e.baseCur=cfg.base;e.rate=rt;
+  if(e.type==='tr')e.cat='转账';if(e.cat==='待分类')e.flag=1;
+  [e.acct,e.to].forEach(a=>{if(a&&!cfg.accts.includes(a))cfg.accts.push(a)});return e}
+function nthId(base,seen){seen[base]=(seen[base]||0)+1;return safeId(base+(seen[base]>1?'_'+seen[base]:''))}
+// 充值：信用卡那边是“转出”，钱包那边是“转入”。同一笔只记一条转账（金额相同、±3 天内配对）
+function findTransfer(to,amt,date,pool){const d0=new Date(date+'T00:00').getTime();
+  return pool.find(x=>x.type==='tr'&&x.to===to&&Math.abs(x.amt-amt)<0.5&&Math.abs(new Date(x.date+'T00:00').getTime()-d0)<=3*864e5)}
+function parseBank(rows,kind,fname){
+  const out={items:[],skipped:{},already:0,acctName:KIND_NAME[kind]};const skip=r=>out.skipped[r]=(out.skipped[r]||0)+1;
+  const seen={};const batch=[];
+  const push=(e,note)=>{if(entries.has(e.id)){out.already++;return}
+    // 和手动记录或已有记录查重（同账户、同金额、±3天）
+    const d0=new Date(e.date+'T00:00').getTime();
+    let dup=null;
+    if(e.type==='tr'){dup=findTransfer(e.to,e.amt,e.date,[...entries.values()])||null}
+    else dup=[...entries.values()].find(x=>x.src==='manual'&&x.type===e.type&&x.acct===e.acct&&Math.abs(x.amt-e.amt)<0.5&&Math.abs(new Date(x.date+'T00:00').getTime()-d0)<=3*864e5)||null;
+    batch.push(e);out.items.push({e,dup,why:note||''})};
+  if(kind==='coop'){
+    const hi=findHeader(rows,['ご利用日','ステータス']);const h=rows[hi].map(nk);const ix=t=>h.findIndex(c=>c===nk(t));
+    const C={d:ix('ご利用日'),m:ix('ご利用店舗'),st:ix('ステータス'),a:ix('ご利用金額'),pu:ix('ポイント（内）'),pg:ix('ポイント（付与）')};
+    const acct=cfg.accts.find(a=>/生协/.test(a))||'生协卡';
+    for(const r of rows.slice(hi+1)){const dt=parseDT(r[C.d]);if(!dt)continue;
+      const st=nk(r[C.st]),m=nk(r[C.m]),a=jpN(r[C.a]),pu=C.pu>=0?jpN(r[C.pu]):0,pg=C.pg>=0?jpN(r[C.pg]):0;
+      const id=nthId('coop_'+hash([dt,st,m,a,pu,pg].join('|')),seen);
+      if(st.includes('支払い完了')){push(mkE({id,date:dt.slice(0,10),time:dt.slice(11),amt:a,acct,cat:'餐饮',note:/食堂|ファミール/.test(m)||!m?'生协':noteOf(m)||'生协',merchant:m,ptUsed:pu,ptGot:pg,src:'coop',ext:''}))}
+      else if(/チャージ|入金/.test(st)){if(findTransfer(acct,a,dt.slice(0,10),batch.concat([...entries.values()]))){skip('充值已和信用卡那边配对');continue}
+        push(mkE({id,type:'tr',date:dt.slice(0,10),time:dt.slice(11),amt:a,acct:'待确认来源',to:acct,note:'生协卡充值',src:'coop'}),'充值来源待确认')}
+      else if(/ポイント/.test(st)){skip('单独的积分记录')}
+      else if(/返品|取消/.test(st)){push(mkE({id,date:dt.slice(0,10),amt:-Math.abs(a),acct,cat:'餐饮',note:'退款 '+noteOf(m),merchant:m,src:'coop'}),'退款')}
+      else skip('状态不明（'+st+'）');}
+  }else if(kind==='paypay'){
+    const hi=findHeader(rows,['Date & Time','Transaction Type']);const h=rows[hi].map(cellStr);const ix=t=>h.indexOf(t);
+    const acct=cfg.accts.find(a=>/^paypay$/i.test(a))||'paypay';
+    for(const r of rows.slice(hi+1)){const dt=parseDT(r[ix('Date & Time')]);if(!dt)continue;
+      const type=cellStr(r[ix('Transaction Type')]),m=nk(r[ix('Business Name')]),method=cellStr(r[ix('Method')]);
+      const o=jpN(r[ix('Amount Outgoing (Yen)')]),inc=jpN(r[ix('Amount Incoming (Yen)')]),tid=cellStr(r[ix('Transaction ID')]);
+      const pu=[...method.matchAll(/PayPay Point\s*\(([\d,]+)\s*yen\)/gi)].reduce((s,x)=>s+jpN(x[1]),0);
+      const id=tid?safeId('pp_'+tid+'_'+hash(type)):nthId('pp_'+hash([dt,type,m,o,inc].join('|')),seen);
+      const base={id,date:dt.slice(0,10),time:dt.slice(11),acct,merchant:m,src:'paypay',ext:tid,pay:method};
+      if(type==='Payment'||type==='Bill Payment'){
+        // 积分付的部分：这里金额是全价，用掉的积分记在“积分”里
+        push(mkE(Object.assign(base,{amt:o,cat:catOf(m),note:noteOf(m),ptUsed:pu})),/Credit|JCB|Visa|Master/i.test(method)?'用 PayPay 卡付：别再从信用卡账单重复导入':'')}
+      else if(type==='Money Received'){if(inc===313||inc===314)push(mkE(Object.assign(base,{type:'inc',amt:inc,cat:'Spotify拼车',note:'Spotify拼车'})));else push(mkE(Object.assign(base,{type:'inc',amt:inc,cat:'其他收入',note:m||'收到转账'})),'确认用途')}
+      else if(type==='Money Sent')push(mkE(Object.assign(base,{amt:o,cat:'人情',note:m||'转账给别人'})),'确认用途');
+      else if(/Charge|Top Up/i.test(type)){if(findTransfer(acct,inc||o,dt.slice(0,10),batch.concat([...entries.values()]))){skip('充值已和信用卡那边配对');continue}push(mkE(Object.assign(base,{type:'tr',amt:inc||o,acct:'待确认来源',to:acct,note:'PayPay充值'})),'充值来源待确认')}
+      else if(/Refund|Cancel/i.test(type))push(mkE(Object.assign(base,{amt:-(inc||o),cat:catOf(m),note:'退款 '+noteOf(m)})),'退款');
+      else if(/Point/i.test(type))skip('积分获得/过期记录');
+      else skip('其他类型（'+type+'）');}
+  }else if(kind==='smbc'){
+    const acct=cfg.accts.find(a=>/三井住友/.test(a))||'三井住友信用卡';
+    for(const r of rows){const d=cellStr(r[0]);if(!/^20\d{2}\/\d{1,2}\/\d{1,2}$/.test(d))continue;
+      const m=nk(r[1]),v=jpN(r[2]);if(!m||!v)continue;const date=parseDT(d).slice(0,10);
+      const id=nthId('smbc_'+date.replace(/-/g,'')+'_'+hash(m+'|'+v),seen);
+      const base={id,date,acct,merchant:m,src:'smbc'};
+      let to=null;if(/大学生協電子マネー入金|生協.*チャージ/.test(m))to=cfg.accts.find(a=>/生协/.test(a))||'生协卡';else if(/SUICA/i.test(m))to=cfg.accts.find(a=>/suica/i.test(a))||'suica';else if(/PAYPAY.*チャージ/i.test(m))to=cfg.accts.find(a=>/^paypay$/i.test(a))||'paypay';else if(/スターバックス|STARBUCKS/i.test(m)&&!/店/.test(m))to=cfg.accts.find(a=>a==='星巴克卡')||'星巴克卡';
+      if(to&&v>0){
+        // 钱包那边如果已经导入了“来源待确认”的充值，就把来源补上，不再新增
+        const pend=[...entries.values()].concat(batch).find(x=>x.type==='tr'&&x.to===to&&x.acct==='待确认来源'&&Math.abs(x.amt-v)<0.5&&Math.abs(new Date(x.date+'T00:00')-new Date(date+'T00:00'))<=3*864e5);
+        if(pend){pend.acct=acct;delete pend.flag;pend.updated=Date.now();if(entries.has(pend.id)){entries.set(pend.id,pend);outbox[pend.id]=pend}skip('充值已和'+to+'那边配对（补上来源）');continue}
+        if(findTransfer(to,v,date,[...entries.values()].concat(batch))){skip('充值已经记过');continue}
+        push(mkE(Object.assign(base,{type:'tr',amt:v,to,note:to+'充值'})),to==='星巴克卡'?'星巴克扣款：当作星巴克卡充值，若是店里直接消费请改成支出':'');continue}
+      if(v<0){push(mkE(Object.assign(base,{amt:v,cat:catOf(m),note:'退款 '+noteOf(m)})),'退款（负数）');continue}
+      push(mkE(Object.assign(base,{amt:v,cat:catOf(m),note:noteOf(m)})),/PAYPAY/i.test(m)?'可能和 PayPay 账单重复':'');}
+  }else if(kind==='suicacsv'){
+    const hi=findHeader(rows,['Date','AmountJPY']);const h=rows[hi].map(cellStr);const ix=t=>h.indexOf(t);
+    const acct=cfg.accts.find(a=>/suica/i.test(a))||'suica';
+    for(const r of rows.slice(hi+1)){const dt=parseDT(r[ix('Date')]);const a=jpN(r[ix('AmountJPY')]),bal=jpN(r[ix('BalanceJPY')]);if(!dt||!a)continue;
+      const m=nk(r[ix('Merchant')]);suicaRow(push,skip,batch,acct,dt.slice(0,10),a,bal,m,ix('Time')>=0?cellStr(r[ix('Time')]):'')}
+  }
+  return out;
+}
+function suicaRow(push,skip,batch,acct,date,a,bal,m,time){
+  const id=safeId('suica_'+date.replace(/-/g,'')+'_'+a+'_'+bal);
+  if(a>0){if(findTransfer(acct,a,date,batch.concat([...entries.values()]))){skip('充值已和信用卡那边配对');return}
+    push(mkE({id,type:'tr',date,time,amt:a,acct:'待确认来源',to:acct,note:'Suica充值',src:'suica'}),'充值来源待确认（招行/三井住友？）')}
+  else push(mkE({id,date,time,amt:-a,acct,cat:'交通',note:/阪急バス|バス/.test(m)?'阪急':(m||'Suica'),merchant:m,src:'suica'}));
+}
+// Suica PDF（JR 的利用履历）：用 pdf.js 取出文字，再按“月 日 … 余额 ±金额”解析
+const PDFJS='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+function loadPdf(){return window.pdfjsLib?Promise.resolve():new Promise((res,rej)=>{const s=document.createElement('script');s.src=PDFJS;s.onload=()=>{pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS.replace('pdf.min.js','pdf.worker.min.js');res()};s.onerror=()=>rej(new Error('读取 PDF 的组件没加载成功，检查网络'));document.head.appendChild(s)})}
+async function pdfLines(file){await loadPdf();const doc=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const lines=[];
+  for(let p=1;p<=doc.numPages;p++){const tc=await (await doc.getPage(p)).getTextContent();const rows={};
+    tc.items.forEach(it=>{const y=Math.round(it.transform[5]/3);(rows[y]=rows[y]||[]).push(it)});
+    Object.keys(rows).sort((a,b)=>b-a).forEach(y=>lines.push(rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ')))}
+  return lines}
+function parseSuicaPdf(lines,fname){
+  const out={items:[],skipped:{},already:0,acctName:'Suica'};const skip=r=>out.skipped[r]=(out.skipped[r]||0)+1;const batch=[];
+  const push=(e,why)=>{if(entries.has(e.id)){out.already++;return}batch.push(e);out.items.push({e,dup:null,why:why||''})};
+  const content=lines.join('\n').normalize('NFKC').replace(/[￥¥\\]/g,'¥');
+  const nd=String(fname).match(/_(20\d{2})(\d{2})(\d{2})_/),dd=content.match(/(20\d{2})\/(\d{1,2})\/(\d{1,2})/);
+  let year=+(nd?nd[1]:dd?dd[1]:new Date().getFullYear()),last=0;
+  const acct=cfg.accts.find(a=>/suica/i.test(a))||'suica';
+  for(const line of content.split('\n')){const m=line.trim().match(/^(0?[1-9]|1[0-2])\s+(0?[1-9]|[12]\d|3[01])\s+(.*)$/);if(!m)continue;
+    const mo=+m[1],day=+m[2];const t=m[3].match(/¥?([\d,]+)\s+([+-]\s*[\d,]+)\s*$/);if(!t){if(/繰/.test(m[3]))continue;skip('读不懂的行');continue}
+    if(last===12&&mo===1)year++;last=mo;const a=jpN(t[2].replace(/\s/g,'')),bal=jpN(t[1]);if(!a)continue;
+    suicaRow(push,skip,batch,acct,year+'-'+pad(mo)+'-'+pad(day),a,bal,m[3].slice(0,t.index).replace(/¥/g,'').trim(),'')}
+  if(!out.items.length&&!out.already)throw new Error('这个 PDF 没读出 Suica 记录。把文件发给 Claude 看看格式。');
+  return out;
 }
 
 /* ===================== 备份 ===================== */
@@ -750,8 +885,7 @@ $('baseSel').onchange=e=>{cfg.base=e.target.value;saveCfg();renderAll();fillSett
 $('rateTbl').addEventListener('change',e=>{const c=e.target.dataset.rate;if(!c)return;const v=parseAmt(e.target.value);if(!(v>0)){fillSettings();return}cfg.rates[c]=cfg.rates[cfg.base]/v;cfg.ratesDate=ymd(new Date())+'（手动改过）';saveCfg();fillSettings();renderAll()});
 $('addCurBtn').onclick=()=>{const c=$('newCur').value.trim().toUpperCase();if(!/^[A-Z]{3}$/.test(c)){toast('币种代码是 3 个字母');return}if(!cfg.rates[c])cfg.rates[c]=1;$('newCur').value='';saveCfg();fillSettings();toast('已加 '+c+'，记得把汇率改对')};
 $('saveLists').onclick=()=>{const c=splitList($('catsTa').value),i=splitList($('incTa').value),a=splitList($('acctTa').value);if(!c.length||!a.length){toast('至少留一个分类和一个账户');return}if(!c.includes('待分类'))c.push('待分类');cfg.cats=c;cfg.incCats=i.length?i:['其他收入'];cfg.accts=a;saveCfg();renderAll();toast('已保存')};
-$('impZfb').onclick=()=>{impKind='zfb';$('fileIn').accept='.xlsx,.xls,.csv';$('fileIn').click()};
-$('impWx').onclick=()=>{impKind='wx';$('fileIn').accept='.xlsx,.xls,.csv';$('fileIn').click()};
+$('impAuto').onclick=()=>{impKind='auto';$('fileIn').accept='.xlsx,.xls,.csv,.txt,.pdf';$('fileIn').click()};
 $('impJson').onclick=()=>{impKind='json';$('fileIn').accept='.json,.txt';$('fileIn').click()};
 $('fileIn').onchange=async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
@@ -759,8 +893,11 @@ $('fileIn').onchange=async e=>{
     if(impKind==='json'){importJson(await f.text());return}
     if(impKind==='csv'){importCsvRows(await readRows(f));return}
     toast('读取中…');
+    if(/\.pdf$/i.test(f.name)){showImport(parseSuicaPdf(await pdfLines(f),f.name),'suica');return}
     const rows=await readRows(f);
-    showImport(buildImport(rows,impKind),impKind);
+    const k=impKind==='auto'?detectKind(rows,f.name):impKind;
+    if(!k)throw new Error('认不出是哪家的账单。把文件发给 Claude 看看。');
+    showImport(k==='zfb'||k==='wx'?buildImport(rows,k):parseBank(rows,k,f.name),k);
   }catch(err){toast('导入失败：'+(err.message||err))}
 };
 $('expJson').onclick=()=>{try{localStorage.setItem('ssj.lastExport',String(Date.now()))}catch(e){}};$('expJson').addEventListener('click',()=>offerFile('随手记备份_'+ymd(new Date())+'.json',JSON.stringify({app:'suishouji',v:1,exported:new Date().toISOString(),cfg,entries:[...entries.values()]},null,1)));
